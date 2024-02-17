@@ -1,8 +1,13 @@
+// ignore_for_file: prefer_const_constructors, avoid_print, prefer_const_literals_to_create_immutables
+
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_compass/flutter_compass.dart';
 import 'package:flutter_naver_map/flutter_naver_map.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:open_route_service/open_route_service.dart';
+import 'package:open_route_test/main_view_model.dart';
 
 class MyMap extends StatefulWidget {
   const MyMap({Key? key}) : super(key: key);
@@ -12,28 +17,17 @@ class MyMap extends StatefulWidget {
 }
 
 class _MyMapState extends State<MyMap> {
-  NCameraPosition? cameraPosition;
+  final vm = MainViewModel();
   NaverMapController? controller;
+  StreamSubscription<Position>? posListener;
+  StreamSubscription<CompassEvent>? compassListener;
+  Position? position;
 
   @override
   void initState() {
     super.initState();
 
-    final data = Geolocator.getCurrentPosition().then((value) {
-      print(value.heading);
-      print(value.latitude);
-      print(value.longitude);
-    });
-    print(data);
-
-    _determinePosition();
-
-    cameraPosition = NCameraPosition(
-      target: NLatLng(startLat, startLng),
-      zoom: 15,
-      // bearing: 45,
-      // tilt: 30,
-    );
+    init();
   }
 
   @override
@@ -41,6 +35,22 @@ class _MyMapState extends State<MyMap> {
     super.dispose();
 
     controller?.dispose();
+    posListener?.cancel();
+    compassListener?.cancel();
+  }
+
+  Future<void> init() async {
+    final posStream = await vm.determinePosition();
+
+    posListener = posStream.listen((pos) {
+      position = pos;
+    });
+
+    compassListener = FlutterCompass.events?.listen((bearing) {
+      if (position != null && bearing.heading != null) {
+        moveCamera(bearing: bearing.heading!, position: position!);
+      }
+    });
   }
 
   @override
@@ -50,18 +60,17 @@ class _MyMapState extends State<MyMap> {
         children: [
           NaverMap(
             options: NaverMapViewOptions(
-              initialCameraPosition: cameraPosition,
-              // mapType: NMapType.navi,
+              // initialCameraPosition: cameraPosition,
               activeLayerGroups: [
                 NLayerGroup.bicycle,
               ],
             ),
             onMapReady: (mapController) {
               controller = mapController;
-              cameraPath();
+              // drawPath();
             },
             onCameraChange: (position, reason) {
-              print('position: ${position.name}');
+              // print('position: ${position.name}');
             },
           ),
           Positioned(
@@ -71,8 +80,7 @@ class _MyMapState extends State<MyMap> {
               children: [
                 InkWell(
                   onTap: () {
-                    // await getPath();
-                    cameraPath();
+                    getPath().then((paths) => drawPath(paths));
                   },
                   child: Container(
                     width: 80,
@@ -82,41 +90,9 @@ class _MyMapState extends State<MyMap> {
                   ),
                 ),
                 SizedBox(width: 10),
-                InkWell(
-                  onTap: () {
-                    moveCamera();
-                  },
-                  child: Container(
-                    width: 80,
-                    height: 80,
-                    color: Colors.yellow,
-                    child: Text('카메라 조정'),
-                  ),
-                ),
-                SizedBox(width: 10),
-                InkWell(
-                  onTap: () async {
-                    FlutterCompass.events?.listen((event) {
-                      print(event.heading);
-
-                      controller?.updateCamera(
-                        NCameraUpdate.withParams(
-                          target: NLatLng(endLat, endLng),
-                          bearing: event.heading,
-                        ),
-                      );
-                    });
-                  },
-                  child: Container(
-                    width: 80,
-                    height: 80,
-                    color: Colors.yellow,
-                    child: Text('나침반'),
-                  ),
-                ),
               ],
             ),
-          )
+          ),
         ],
       ),
     );
@@ -127,7 +103,7 @@ class _MyMapState extends State<MyMap> {
   final double endLat = 37.517234;
   final double endLng = 127.047611;
 
-  Future<void> cameraPath() async {
+  Future<void> drawPath(List<NLatLng> coordinates) async {
     var pattern = await NOverlayImage.fromWidget(
       widget: Icon(
         Icons.keyboard_arrow_up,
@@ -147,35 +123,72 @@ class _MyMapState extends State<MyMap> {
         outlineWidth: 3,
         width: 8,
         id: 'test',
-        // coords: coordinates,
-        coords: [NLatLng(startLat, startLng), NLatLng(endLat, endLng)],
+        coords: coordinates,
+        // coords: [
+        //   NLatLng(startLat, startLng),
+        //   NLatLng(endLat, endLng),
+        // ],
       ),
     );
   }
 
-  List<NLatLng> coordinates = [];
-
-  Future<void> getPath() async {
+  Future<List<NLatLng>> getPath() async {
     final OpenRouteService client = OpenRouteService(
         apiKey: '5b3ce3597851110001cf624848ba941757374e1da01d94d7865bc499');
 
     // Form Route between coordinates
     final List<ORSCoordinate> routeCoordinates =
         await client.directionsRouteCoordsGet(
-      startCoordinate: ORSCoordinate(latitude: startLat, longitude: startLng),
-      endCoordinate: ORSCoordinate(latitude: endLat, longitude: endLng),
+      // startCoordinate: ORSCoordinate(latitude: startLat, longitude: startLng),
+      // endCoordinate: ORSCoordinate(latitude: endLat, longitude: endLng),
+      startCoordinate: ORSCoordinate(
+        latitude: position!.latitude,
+        longitude: position!.longitude,
+      ),
+      endCoordinate: ORSCoordinate(
+        latitude: position!.latitude + 0.01,
+        longitude: position!.longitude + 0.01,
+      ),
       profileOverride: ORSProfile.cyclingRoad,
     );
 
     routeCoordinates.forEach(print);
 
+    List<NLatLng> coordinates = [];
     routeCoordinates.forEach((coordinate) {
       coordinates.add(NLatLng(coordinate.latitude, coordinate.longitude));
     });
+
+    return coordinates;
   }
 
-  Future<void> moveCamera() async {
-    var pattern = await NOverlayImage.fromWidget(
+  Future<void> moveCamera({
+    required Position position,
+    required double bearing,
+  }) async {
+    var icon = await getCurrentPositionImage();
+
+    final target = NLatLng(position.latitude, position.longitude);
+
+    controller?.updateCamera(
+      NCameraUpdate.withParams(
+        zoom: 15,
+        target: target,
+        bearing: bearing,
+      ),
+    );
+
+    controller?.addOverlay(
+      NMarker(
+        id: "test",
+        position: target,
+        icon: icon,
+      ),
+    );
+  }
+
+  Future<NOverlayImage> getCurrentPositionImage() async {
+    return await NOverlayImage.fromWidget(
       widget: Stack(
         children: [
           Icon(
@@ -193,57 +206,5 @@ class _MyMapState extends State<MyMap> {
       size: Size(20, 20),
       context: context,
     );
-
-    controller?.updateCamera(
-      NCameraUpdate.withParams(
-        target: NLatLng(endLat, endLng),
-        bearingBy: 1,
-      ),
-    );
-
-    controller?.addOverlay(
-      NMarker(
-        id: "test",
-        position: NLatLng(endLat, endLng),
-        icon: pattern,
-      ),
-    );
-  }
-
-  Future<Position> _determinePosition() async {
-    bool serviceEnabled;
-    LocationPermission permission;
-
-    // Test if location services are enabled.
-    serviceEnabled = await Geolocator.isLocationServiceEnabled();
-    if (!serviceEnabled) {
-      // Location services are not enabled don't continue
-      // accessing the position and request users of the
-      // App to enable the location services.
-      return Future.error('Location services are disabled.');
-    }
-
-    permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
-      if (permission == LocationPermission.denied) {
-        // Permissions are denied, next time you could try
-        // requesting permissions again (this is also where
-        // Android's shouldShowRequestPermissionRationale
-        // returned true. According to Android guidelines
-        // your App should show an explanatory UI now.
-        return Future.error('Location permissions are denied');
-      }
-    }
-
-    if (permission == LocationPermission.deniedForever) {
-      // Permissions are denied forever, handle appropriately.
-      return Future.error(
-          'Location permissions are permanently denied, we cannot request permissions.');
-    }
-
-    // When we reach here, permissions are granted and we can
-    // continue accessing the position of the device.
-    return await Geolocator.getCurrentPosition();
   }
 }
